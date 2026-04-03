@@ -6835,6 +6835,6 @@ v12({
     Effect = "Last Breath New",
     char   = character,
     id     = 0,
-    second = false,
+    second = true,
     hit    = character,
 })
