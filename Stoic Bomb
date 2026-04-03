@@ -1,6 +1,4 @@
-local l_Sounds_0 = Instance.new("Folder");
-l_Sounds_0.Name = "Sounds";
-l_Sounds_0.Parent = game:service("SoundService");
+
 --[[
 ================================================================================
   EXTRACTION ANALYSIS — StoicBomb_Apply.lua
