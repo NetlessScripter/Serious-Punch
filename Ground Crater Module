@@ -1,0 +1,1542 @@
+--[[
+================================================================================
+  EXTRACTION ANALYSIS — WHAT THIS FILE IS, WHERE IT CAME FROM, WHAT'S MISSING
+================================================================================
+
+  SOURCE
+  ------
+  This file was extracted from tsb_interpreter.txt — the full TSB (The
+  Strongest Battlegrounds) LocalScript, deobfuscated from bytecode.
+
+  The full interpreter is ~149,235 lines. This extracted file contains:
+    - "Ground Crater"  — the target effect (interpreter line 112954)
+    - "Camshake"       — included as a general support utility
+    and every support system they depend on.
+
+================================================================================
+  WHAT WAS STRIPPED
+================================================================================
+
+  v6  (interpreter lines 1-9)
+      Vararg array-copy helper used by the original bytecode VM shim. Stripped.
+
+  script.Parent = nil + StarterPlayer self-cleanup  (interpreter lines 10-14)
+      Startup self-hiding logic. Irrelevant for standalone use. Stripped.
+
+  v15=require(Info) / v16=require(Util) / v17=require(MeshFlipbooks)
+  l_Cutscenes_0 = ReplicatedStorage.Cutscenes  (interpreter lines 22-25)
+      Module dependencies used by other effects. Not referenced by Ground
+      Crater, Camshake, or any of their support functions. Stripped.
+
+  v19 / v25()  (interpreter lines 26-94)
+      Runtime string obfuscation system. ~57-entry fruit/word table used to
+      reconstruct workspace folder names ("FallenParts", "Baseplate", etc.)
+      at runtime. Ground Crater does not use this system. Stripped.
+
+  v29 = require(VoxelDestruction)  (interpreter line 98)
+      Terrain voxel fracturing. Not needed. Stripped.
+
+  l_LegacyReplication_0  (interpreter line 99)
+      Legacy replication folder (Death screen etc.). Not needed. Stripped.
+
+  v34, v35  (interpreter lines 107-154)
+      Character selection state + movement-direction animation table. Stripped.
+
+  v36 = WindShake  (interpreter lines 155-164)
+      PC-only grass/tree wind animation. Stripped.
+
+  Ranked spectator camera / FPS tracker / map leaderboard tween
+  (interpreter lines 165-356)
+      Pure UI/camera systems. Stripped.
+
+  v112 CALLBACK  (interpreter lines 388-403)
+      The terrain ChildAdded TTL cleanup body is KEPT in full here.
+      Unlike the LastBreath extraction, v106 is also kept so the body
+      functions correctly. No connection leak.
+
+  v132 = workspace.Thrown.ChildAdded  (interpreter lines 405-584)
+      Handles QuickWind, QuickSlashMesh, AdjustStabby, CleaveBruh named
+      parts. Not needed for Ground Crater. Stripped.
+
+  75 pre-seeded "starterdeb" parts  — INCLUDED (interpreter lines 1857-1865)
+      The part recycling pool IS pre-warmed here, so v301 has parts available
+      from the first debris call. No fallback to Instance.new() on every call.
+
+  v306  (interpreter lines 1866+)
+      Per-character VFX data (color, flipbook, scale). Not used by Ground
+      Crater. Stripped.
+
+  All other v12 effect blocks
+      223 named effects in the full interpreter. Only Ground Crater and
+      Camshake are kept here. All others stripped.
+
+  shared.repfire = v12  (interpreter line 148122)
+      Not needed. v471 calls v12() directly for "Break Model" (Stadium
+      special-case). That call will silently fall through the v12 chain
+      since "Break Model" is not one of the kept effects. No crash.
+
+  CharacterHandler watchdog / Reset BindableEvent / Snow follower /
+  Cloud tween  (interpreter lines 149078-149234)
+      End-of-script lifecycle systems. None affect Ground Crater. Stripped.
+
+  OnIncomingMessage VIP chat hook — STRIPPED here (was kept in LastBreath
+      extraction as a side-along passenger). Not relevant to Ground Crater.
+
+================================================================================
+  GLOBALS PRESENT / FIXED vs. LastBreath EXTRACTION
+================================================================================
+
+  v294 = tick()  — PRESENT
+      The sweep timer for v301's full-sweep mode. This was the "LIVE BUG"
+      in the LastBreath extraction (it was stripped there). It is correctly
+      included here. v301 will not crash.
+
+  v472 = { workspace.Live, workspace.Thrown }  — PRESENT
+      The default RaycastParams exclude list for v717. Also the "LIVE BUG"
+      in the LastBreath extraction. Correctly included here. Raycasts will
+      use the proper filter.
+
+  v106  — PRESENT (full TTL cleanup body intact)
+      The terrain attachment cleanup dictionary. Kept here with its full
+      ChildAdded body (unlike the LastBreath extraction where it was stripped
+      to `_`). Minor connection leak is eliminated.
+
+================================================================================
+  shared.* STUBS
+================================================================================
+
+  shared.sfx           — DEFINED (v313, sound factory)
+  shared.ray           — DEFINED (v717, raycast helper)
+  shared.resizeparticle — DEFINED (particle keypoint scaler)
+  shared.recentdebris  — INITIALIZED as {} (lazy table used by v471's
+                         water/sand sound dedup logic)
+  shared.OnScreen      — STUB provided. In the full game this is set by
+                         another LocalScript. The stub uses WorldToScreenPoint
+                         so it behaves correctly.
+  shared.SetCore       — STUB (or function() end)
+  shared.addshake      — STUB (or function() end) — used by Camshake block
+  shared.CutsceneEvent — STUB (or function() end)
+  shared.repfire       — NOT stubbed. v471 calls v12() directly; shared.repfire
+                         is never invoked by Ground Crater's code path.
+
+================================================================================
+  PAYLOAD FIELDS — Ground Crater
+================================================================================
+
+  Required:
+    v1090.start     → Vector3 or Instance (Attachment → WorldPosition,
+                      BasePart → Position). Ray origin for ground detection.
+    v1090["end"]    → Vector3. Ray direction (e.g. Vector3.new(0, -50, 0)).
+
+  Optional:
+    v1090.Seed          → number; seeds the Random for cross-client determinism
+    v1090.Sound         → table; { SoundId=, Volume=, ... } played at hit point
+    v1090.nosmoke       → bool; skip Smoke + UpSmoke particle emission
+    v1090.NoCircleSmoke → bool; skip Smoke:Emit() only
+    v1090.NoUpSmoke     → bool; skip UpSmoke:Emit() only
+    v1090.smoked        → bool; force attachment onto Terrain regardless of
+                          whether the hit part is Anchored
+    v1090.stronger      → table; { size1=, size2=, minus= } upscales particles
+    v1090.CloserCircle  → bool; tighter/faster smoke ring
+    v1090.Closerr       → bool; smaller, slower smoke
+    v1090.speed1        → NumberRange; override UpSmoke Speed when .stronger set
+    v1090.NoCrater2     → bool; skip the entire v471 tile/debris call
+    v1090.amount        → number; tile count override (default 10, 7 for
+                          sand/snow materials)
+    v1090.sizemult      → number; tile size multiplier (default 1)
+    v1090.size          → number; scales the new[1]/new[2] tile size range
+    v1090.nosound       → bool; skip debris impact sounds
+    v1090.nodebris      → bool; skip loose flying debris pieces
+    v1090.notiles       → bool; skip the tile ring
+    v1090.angle         → number (degrees); angle culling for tile placement
+    v1090.anglecfr      → CFrame; reference CFrame for angle culling
+    v1090.dontcollide   → Player; if LocalPlayer, tiles use "nocol" group
+    v1090.dispersefast  → number or bool; tiles sink/fade faster; entire v471
+                          call is skipped if the position is off-screen
+
+  PAYLOAD FIELDS — Camshake
+    v1090.Intensity     → number; shake strength passed to shared.addshake
+    v1090.Last          → number (seconds); run decaying shake loop for this
+                          duration at 0.03s intervals (×0.9 decay per tick)
+    v1090.OnScreenOnly  → bool; skip shake if v1090.RealPart is off-screen
+    v1090.RealPart      → Model; character model used for OnScreenOnly check
+    v1090.IgnoreReduced → bool; passed through to shared.addshake
+
+================================================================================
+  NOTES ON v471 INTERNALS
+================================================================================
+
+  Stadium special-case  (inside v471, tile loop)
+      If the ground part is named "Stadium" and lacks "FakeStadium" attribute,
+      v471 calls v12({Effect="Break Model", Stadium=...}). "Break Model" is
+      not a kept effect — v12 falls through silently. No crash, no visual.
+
+  Two Random strategies:
+      v366 = Random.new(v363.Seed or tick()) — seeded per v471 call. Ensures
+      tile placement is identical across clients for the same Seed value
+      (cross-client determinism). Pass the same Seed from the server to achieve
+      consistent crater shapes.
+      v95 = Random.new() — global unseeded instance, used as fallback when
+      v363.Seed is nil.
+
+  Part recycling pool (v107 / v301):
+      The 75 starterdeb parts are pre-seeded so the first 75 debris calls
+      reuse existing parts instead of calling Instance.new("Part"). After the
+      pool is exhausted (or parts have not yet been returned), v301() returns
+      nil and the pattern `v301() or Instance.new("Part")` falls back to
+      creating a new Part.
+
+  shared.recentdebris:
+      Used by v471's water/sand impact sound system to avoid playing the same
+      impact sound twice within 0.5s if two craters land within 5 studs of
+      each other. Initialized here as {} so it's safe on first run.
+
+================================================================================
+  REUSE GUIDE — EXTRACTING OTHER EFFECTS
+================================================================================
+
+  This file is a clean reference for all Ground Crater support systems.
+  When extracting another effect that hits the ground, copy these helpers
+  directly from here rather than re-deriving from the interpreter:
+
+    v471         — tile/debris spawner (the main workhorse)
+    v313/sfx     — sound factory
+    v327         — CFrame surface-orient helper
+    v338         — GetTouchingParts workaround
+    v717/ray     — raycast helper
+    v301         — part recycling pool
+    v362         — tween-out debris helper
+    resizeparticle — particle scaler
+    v472         — raycast default filter list
+
+  PROCEDURE (same as LastBreath extraction guide):
+  1. Find your effect block in tsb_interpreter.txt (search Effect string).
+  2. Paste its elseif into the v12 chain in this file, before Ground Crater.
+  3. Check the upvalue comment; any upvalue already here can be used as-is.
+  4. Any upvalue not present must be located in the interpreter and added to
+     the globals section above v471.
+  5. v294 and v472 are both present here — no need to re-add them.
+
+================================================================================
+]]
+
+-- ============================================================
+-- GLOBALS
+-- ============================================================
+local l_LocalPlayer_0 = game.Players.LocalPlayer
+local v9  = game:service("CollectionService")
+local v10 = game:service("TweenService")
+
+local v12 = nil  -- forward declaration; assigned below after all helpers
+
+local v95 = Random.new()
+
+local function v102(v97, v98, v99, v100) --[[ Line: 322 ]]
+    -- upvalues: v95 (copy)
+    local v101 = v100 or v95;
+    if not v98 and v97 then
+        v98 = v97;
+        v97 = 1;
+    end;
+    if not v98 and not v97 then
+        v97 = 0;
+        v98 = 1;
+    end;
+    if not v99 then
+        return v101:NextNumber(v97, v98);
+    else
+        return v101:NextInteger(v97, v98);
+    end;
+end;
+
+local v106 = {};  -- terrain attachment TTL table
+local v107 = {};  -- part recycling pool
+
+-- terrain ChildAdded TTL cleanup (v112) — full body preserved
+local v112 = workspace.Terrain.ChildAdded:Connect(function(v108) --[[ Line: 358 ]]
+    -- upvalues: v106 (copy)
+    task.wait();
+    if v108.Name == "SmokeBack" or v108:IsA("Attachment") then
+        v106[v108] = tick();
+        local v109 = tick();
+        for v110, v111 in pairs(v106) do
+            if v109 - v111 > 15 then
+                if v110.Parent then
+                    v110:Destroy();
+                end;
+                v106[v110] = nil;
+            end;
+        end;
+    end;
+end);
+
+-- sweep timer for v301 full-sweep mode (PRESENT — no bug here)
+local v294 = tick();
+
+local function v301() --[[ Line: 2083 ]]
+    -- upvalues: v294 (ref), v107 (copy)
+    if tick() - v294 > 300 then
+        v294 = tick();
+        local v295 = 0;
+        for _, v297 in pairs(workspace.Thrown:GetChildren()) do
+            if v297:IsA("Part") and v297:GetAttribute("Spawn") and not table.find(v107, v297) and not v297:GetAttribute("DeletionImmunity") and tick() - v297:GetAttribute("Spawn") > 60 then
+                v297:Destroy();
+                v295 = v295 + 1;
+            end;
+        end;
+        return;
+    else
+        local v298 = rawget(v107, 1);
+        if #v107 > 100 then
+            for _ = 101, #v107 do
+                local v300 = rawget(v107, 101);
+                table.remove(v107, 101);
+                if v300 then
+                    v300:Destroy();
+                end;
+            end;
+        end;
+        if v298 and not v298.Parent then
+            table.remove(v107, 1);
+        end;
+        if v298 and v298.Parent then
+            table.remove(v107, 1);
+            if v298.Name == "starterdeb" then
+                v298.Name = "aa";
+            end;
+            v298.CollisionGroup = "Default";
+            v298:SetAttribute("Spawn", tick());
+            return v298;
+        else
+            return;
+        end;
+    end;
+end;
+
+-- pre-warm the recycling pool with 75 parts
+for _ = 1, 75 do
+    local l_Part_0 = Instance.new("Part");
+    table.insert(v107, l_Part_0);
+    l_Part_0.Anchored = true;
+    l_Part_0.Name = "starterdeb";
+    l_Part_0.CFrame = CFrame.new(100000000, 100000000, 100000000);
+    l_Part_0:SetAttribute("Exempt", true);
+    l_Part_0.Parent = workspace.Thrown;
+end;
+
+-- sound factory
+local function v313(v307) --[[ Line: 2142 ]]
+    -- upvalues: v9 (copy)
+    local l_Sound_0 = Instance.new("Sound");
+    l_Sound_0.SoundGroup = game:GetService("SoundService").Sounds;
+    v9:AddTag(l_Sound_0, "NewSound");
+    if v307.AddTo then
+        table.insert(v307.AddTo, l_Sound_0);
+        v307.AddTo = nil;
+    end;
+    local v309 = nil;
+    local v310 = nil;
+    v310 = l_Sound_0.Ended:connect(function() --[[ Line: 2153 ]]
+        -- upvalues: l_Sound_0 (copy), v309 (ref), v310 (ref)
+        if l_Sound_0 then
+            l_Sound_0:Destroy();
+        end;
+        if v309 then
+            v309:Destroy();
+        end;
+        return v310:Disconnect();
+    end);
+    if not v307.RollOffMaxDistance then
+        v307.RollOffMaxDistance = 300;
+    end;
+    if v307.CFrame then
+        v309 = Instance.new("Attachment");
+        v309.Parent = workspace.Terrain;
+        v309.WorldCFrame = v307.CFrame;
+        v307.Parent = v309;
+    end;
+    v307.CFrame = nil;
+    for v311, v312 in pairs(v307) do
+        l_Sound_0[v311] = v312;
+    end;
+    return l_Sound_0, v309;
+end;
+shared.sfx = v313;
+
+-- CFrame surface-orient helper: rotate UpVector onto a surface normal
+local function v327(v322, v323, v324) --[[ Line: 2202 ]]
+    local v325 = v322:Dot(v323);
+    local v326 = v322:Cross(v323);
+    if v325 < -0.99999 then
+        return CFrame.fromAxisAngle(v324, 3.141592653589793);
+    else
+        return CFrame.new(0, 0, 0, v326.x, v326.y, v326.z, 1 + v325);
+    end;
+end;
+
+-- GetTouchingParts workaround (fires a dummy Touched connection to flush
+-- the physics engine's contact cache before calling GetTouchingParts)
+local function v338(v332) --[[ Line: 2213 ]]
+    if not v332 then
+        return;
+    elseif v332.ClassName == "Model" then
+        return;
+    else
+        local v333 = v332.Touched:Connect(function() --[[ Line: 2216 ]]
+        end);
+        local l_v332_TouchingParts_0 = v332:GetTouchingParts();
+        v333:Disconnect();
+        local v335 = {};
+        for _, v337 in pairs(l_v332_TouchingParts_0) do
+            if v337.Name ~= "InvisibleBorder" and v337.Name ~= "InfBall" then
+                table.insert(v335, v337);
+            end;
+        end;
+        return v335;
+    end;
+end;
+
+-- debris tween-out: shrinks + fades a part then recycles it into v107
+local function v362(v351) --[[ Line: 2259 ]]
+    -- upvalues: v10 (copy), v95 (copy), v102 (copy)
+    local l_v10_0 = v10;
+    local l_v351_0 = v351;
+    local l_new_0 = TweenInfo.new;
+    local v355 = 0.7;
+    local v356 = 1;
+    local l_v95_1 = v95;
+    if not v356 and v355 then
+        v356 = v355;
+        v355 = 1;
+    end;
+    if not v356 and not v355 then
+        v355 = 0;
+        v356 = 1;
+    end;
+    l_v10_0:Create(l_v351_0, l_new_0(l_v95_1:NextNumber(v355, v356), Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = Vector3.new()
+    }):Play();
+    v351.Anchored = false;
+    v351.CanCollide = false;
+    v351.CanTouch = false;
+    l_v10_0 = v351:FindFirstChildOfClass("BodyVelocity");
+    if l_v10_0 then
+        game:GetService("Debris"):AddItem(l_v10_0, 0);
+    end;
+    local l_BodyVelocity_0 = Instance.new("BodyVelocity");
+    l_BodyVelocity_0.MaxForce = Vector3.new(400000, 400000, 400000, 0);
+    v355 = -10;
+    v356 = 10;
+    l_v95_1 = v95;
+    if not v356 and v355 then
+        v356 = v355;
+        v355 = 1;
+    end;
+    if not v356 and not v355 then
+        v355 = 0;
+        v356 = 1;
+    end;
+    local v359 = l_v95_1:NextNumber(v355, v356);
+    l_v95_1 = 10;
+    local v360 = 17.5;
+    local l_v95_2 = v95;
+    if not v360 and l_v95_1 then
+        v360 = l_v95_1;
+        l_v95_1 = 1;
+    end;
+    if not v360 and not l_v95_1 then
+        l_v95_1 = 0;
+        v360 = 1;
+    end;
+    l_BodyVelocity_0.Velocity = Vector3.new(v359, l_v95_2:NextNumber(l_v95_1, v360) * 2, v102(-10, 10)) * 1.5;
+    l_BodyVelocity_0.Parent = v351;
+    game:GetService("Debris"):AddItem(l_BodyVelocity_0, 0.15);
+end;
+
+-- raycast default exclude list (PRESENT — no bug here)
+local v472 = {
+    workspace.Live,
+    workspace.Thrown
+};
+
+-- ============================================================
+-- v471 — ground impact tile/debris spawner
+-- upvalues: v102, v12 (ref), v95, l_LocalPlayer_0, v301, v10,
+--           v107, v327, v338, v362, v313
+-- ============================================================
+local function v471(v363) --[[ Line: 2277 ]]
+    -- upvalues: v102 (copy), v12 (ref), v95 (copy), l_LocalPlayer_0 (copy), v301 (copy), v10 (copy), v107 (copy), v327 (copy), v338 (copy), v362 (copy), v313 (copy)
+    if not v363.add then
+        v363.add = {};
+    end;
+    local v364 = v363.sizemult or 1;
+    local l_add_0 = v363.add;
+    if v363.dispersefast and not shared.OnScreen(v363.cframe.Position) then
+        return;
+    else
+        local v366 = Random.new(v363.Seed or tick());
+        local l_v102_0 = v102;
+        local function v370(v368, v369) --[[ Line: 2288 ]]
+            -- upvalues: l_v102_0 (copy), v366 (copy)
+            return l_v102_0(v368, v369, nil, v366);
+        end;
+        if v363.amount then
+            v363.amount = math.floor(v363.amount);
+        end;
+        local v371 = l_add_0.less and 2.5 or 1;
+        local v372 = nil;
+        if v363.ground.Name == "Stadium" and not v363.ground:GetAttribute("FakeStadium") and not v363.notiles then
+            v372 = v12({
+                Effect = "Break Model",
+                Stadium = v363.ground
+            });
+        end;
+        local v373 = 3;
+        local v374 = 5;
+        local v375 = v366 or v95;
+        if not v374 and v373 then
+            v374 = v373;
+            v373 = 1;
+        end;
+        if not v374 and not v373 then
+            v373 = 0;
+            v374 = 1;
+        end;
+        local v376 = v375:NextNumber(v373, v374);
+        if l_LocalPlayer_0:GetAttribute("S_FastMode") then
+            v376 = v376 / 2;
+        end;
+        if v363.nodebris then
+            v376 = 0;
+        end;
+        v373 = false;
+        v374 = false;
+        if v363.ground.Material == Enum.Material.Water or v363.ground == workspace.Terrain then
+            v375 = {
+                Material = Enum.Material.Sand,
+                Color = Color3.fromRGB(227, 206, 157),
+                Transparency = 0
+            };
+            v363.ground = v375;
+            v375.GetAttribute = function(_) --[[ Line: 2323 ]] --[[ Name: GetAttribute ]]
+            end;
+            v373 = true;
+            v374 = true;
+        end;
+        for _ = 1, v376 do
+            if not l_add_0.less and not v374 then
+                local v379 = 1;
+                local v380 = 3;
+                local v381 = v366 or v95;
+                if not v380 and v379 then
+                    v380 = v379;
+                    v379 = 1;
+                end;
+                if not v380 and not v379 then
+                    v379 = 0;
+                    v380 = 1;
+                end;
+                local v382 = v381:NextNumber(v379, v380);
+                v379 = v301() or Instance.new("Part");
+                v379.CollisionGroup = "nocol";
+                v381 = v363.cframe;
+                local l_Angles_0 = CFrame.Angles;
+                local v384 = -360;
+                local v385 = 360;
+                local v386 = v366 or v95;
+                if not v385 and v384 then
+                    v385 = v384;
+                    v384 = 1;
+                end;
+                if not v385 and not v384 then
+                    v384 = 0;
+                    v385 = 1;
+                end;
+                local v387 = math.rad((v386:NextNumber(v384, v385)));
+                v385 = -360;
+                v386 = 360;
+                local v388 = v366 or v95;
+                if not v386 and v385 then
+                    v386 = v385;
+                    v385 = 1;
+                end;
+                if not v386 and not v385 then
+                    v385 = 0;
+                    v386 = 1;
+                end;
+                local v389 = math.rad((v388:NextNumber(v385, v386)));
+                v386 = -360;
+                v388 = 360;
+                local v390 = v366 or v95;
+                if not v388 and v386 then
+                    v388 = v386;
+                    v386 = 1;
+                end;
+                if not v388 and not v386 then
+                    v386 = 0;
+                    v388 = 1;
+                end;
+                v379.CFrame = v381 * l_Angles_0(v387, v389, (math.rad((v390:NextNumber(v386, v388)))));
+                v379.Size = Vector3.new(v382, v382, v382);
+                v379.Color = v363.ground.Color;
+                v379.CanCollide = not v374;
+                v379.Anchored = false;
+                v379.Material = v363.ground.Material;
+                v379.Transparency = v363.ground.Transparency;
+                v379.Parent = workspace.Thrown;
+                if v379.Material == Enum.Material.Neon then
+                    v379.Material = Enum.Material.Concrete;
+                end;
+                v380 = Instance.new("BodyVelocity");
+                v380.MaxForce = Vector3.new(2000000000, 2000000000, 2000000000, 0);
+                v389 = -25;
+                v384 = 25;
+                v385 = v366 or v95;
+                if not v384 and v389 then
+                    v384 = v389;
+                    v389 = 1;
+                end;
+                if not v384 and not v389 then
+                    v389 = 0;
+                    v384 = 1;
+                end;
+                v387 = v385:NextNumber(v389, v384);
+                v384 = 5;
+                v385 = 25;
+                v386 = v366 or v95;
+                if not v385 and v384 then
+                    v385 = v384;
+                    v384 = 1;
+                end;
+                if not v385 and not v384 then
+                    v384 = 0;
+                    v385 = 1;
+                end;
+                v380.Velocity = Vector3.new(v387, v386:NextNumber(v384, v385), v370(-25, 25)) * 2;
+                v380.Parent = v379;
+                game:GetService("Debris"):AddItem(v380, 0.15);
+                v381 = delay;
+                if v374 then
+                    l_Angles_0 = 0;
+                else
+                    v387 = 3;
+                    v384 = 0;
+                    v385 = 1;
+                    v386 = v366 or v95;
+                    if not v385 and v384 then
+                        v385 = v384;
+                        v384 = 1;
+                    end;
+                    if not v385 and not v384 then
+                        v384 = 0;
+                        v385 = 1;
+                    end;
+                    l_Angles_0 = v387 + v386:NextNumber(v384, v385);
+                end;
+                v381(l_Angles_0, function() --[[ Line: 2360 ]]
+                    -- upvalues: v10 (ref), v379 (copy), v374 (ref), v107 (ref)
+                    v10:Create(v379, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        Transparency = 1,
+                        Size = if v374 then Vector3.new(0, 0, 0, 0) else v379.Size / 1.5
+                    }):Play();
+                    delay(0.3, function() --[[ Line: 2365 ]]
+                        -- upvalues: v379 (ref), v107 (ref)
+                        v379.Anchored = true;
+                        local l_v379_0 = v379;
+                        l_v379_0.AssemblyLinearVelocity = Vector3.new(0, 0, 0, 0);
+                        l_v379_0.AssemblyAngularVelocity = Vector3.new(0, 0, 0, 0);
+                        l_v379_0.Velocity = Vector3.new(0, 0, 0, 0);
+                        v379.CanCollide = false;
+                        v379.CFrame = CFrame.new(100000000, 100000000, 100000000);
+                        table.insert(v107, v379);
+                    end);
+                end);
+            else
+                break;
+            end;
+        end;
+        local v392 = 4;
+        local v393 = 7;
+        local v394 = v366 or v95;
+        if not v393 and v392 then
+            v393 = v392;
+            v392 = 1;
+        end;
+        if not v393 and not v392 then
+            v392 = 0;
+            v393 = 1;
+        end;
+        v375 = v394:NextNumber(v392, v393) / v371;
+        if l_LocalPlayer_0:GetAttribute("S_FastMode") then
+            v375 = v375 / 2;
+        end;
+        if v363.nodebris then
+            v375 = 0;
+        end;
+        for _ = 1, v375 do
+            if not v374 then
+                local v396 = 0.6;
+                local v397 = 0.8;
+                local v398 = v366 or v95;
+                if not v397 and v396 then
+                    v397 = v396;
+                    v396 = 1;
+                end;
+                if not v397 and not v396 then
+                    v396 = 0;
+                    v397 = 1;
+                end;
+                v394 = v398:NextNumber(v396, v397);
+                v396 = v301() or Instance.new("Part");
+                v396.CFrame = v363.cframe;
+                v397 = v327(v396.CFrame.UpVector, v363.normal, (Vector3.new(0, 1, 0, 0)));
+                v396.CFrame = v396.CFrame * (v397 * CFrame.Angles(1.5707963267948966, 0, 0));
+                v396.CollisionGroup = "nocol";
+                v396.Size = Vector3.new(v394, v394, v394);
+                v396.Color = v363.ground.Color;
+                v396.CanCollide = not v374;
+                v396.Name = "SmallDebris";
+                v396.Anchored = false;
+                v396.Material = v363.ground.Material;
+                v396.Transparency = v363.ground.Transparency;
+                v396.Parent = workspace.Thrown;
+                if v396.Material == Enum.Material.Neon then
+                    v396.Material = Enum.Material.Concrete;
+                end;
+                v398 = Instance.new("BodyVelocity");
+                v398.MaxForce = Vector3.new(2000000000, 2000000000, 2000000000, 0);
+                local v399 = -25;
+                local v400 = 25;
+                local v401 = v366 or v95;
+                if not v400 and v399 then
+                    v400 = v399;
+                    v399 = 1;
+                end;
+                if not v400 and not v399 then
+                    v399 = 0;
+                    v400 = 1;
+                end;
+                local v402 = v401:NextNumber(v399, v400);
+                v400 = 5;
+                v401 = 25;
+                local v403 = v366 or v95;
+                if not v401 and v400 then
+                    v401 = v400;
+                    v400 = 1;
+                end;
+                if not v401 and not v400 then
+                    v400 = 0;
+                    v401 = 1;
+                end;
+                v398.Velocity = Vector3.new(v402, v403:NextNumber(v400, v401), v370(-25, 25)) * 2;
+                v398.Parent = v396;
+                game:GetService("Debris"):AddItem(v398, 0.15);
+                local l_BodyAngularVelocity_0 = Instance.new("BodyAngularVelocity");
+                l_BodyAngularVelocity_0.Parent = v396;
+                game:GetService("Debris"):AddItem(l_BodyAngularVelocity_0, 0.5);
+                local l_delay_0 = delay;
+                if v374 then
+                    v402 = 0;
+                else
+                    v399 = 3;
+                    v401 = 0;
+                    v403 = 1;
+                    local v406 = v366 or v95;
+                    if not v403 and v401 then
+                        v403 = v401;
+                        v401 = 1;
+                    end;
+                    if not v403 and not v401 then
+                        v401 = 0;
+                        v403 = 1;
+                    end;
+                    v402 = v399 + v406:NextNumber(v401, v403);
+                end;
+                l_delay_0(v402, function() --[[ Line: 2418 ]]
+                    -- upvalues: v10 (ref), v396 (copy), v374 (ref), l_BodyAngularVelocity_0 (copy), v107 (ref)
+                    v10:Create(v396, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        Transparency = 1,
+                        Size = if v374 then Vector3.new(0, 0, 0, 0) else v396.Size / 1.5
+                    }):Play();
+                    delay(0.3, function() --[[ Line: 2424 ]]
+                        -- upvalues: l_BodyAngularVelocity_0 (ref), v396 (ref), v107 (ref)
+                        l_BodyAngularVelocity_0:Destroy();
+                        v396.Anchored = true;
+                        local l_v396_0 = v396;
+                        l_v396_0.AssemblyLinearVelocity = Vector3.new(0, 0, 0, 0);
+                        l_v396_0.AssemblyAngularVelocity = Vector3.new(0, 0, 0, 0);
+                        l_v396_0.Velocity = Vector3.new(0, 0, 0, 0);
+                        v396.CanCollide = false;
+                        v396.CFrame = CFrame.new(100000000, 100000000, 100000000);
+                        table.insert(v107, v396);
+                    end);
+                end);
+            else
+                break;
+            end;
+        end;
+        local v408 = {};
+        v392 = 5;
+        v393 = 7;
+        if v363.new then
+            v392 = v363.new[1];
+            v393 = v363.new[2];
+        end;
+        v394 = CFrame.new(v363.cframe.p);
+        local v409 = (v392 + v393) / 2;
+        local v410 = v363.amount or 16;
+        if l_LocalPlayer_0:GetAttribute("S_FastMode") then
+            v410 = v410 / 2;
+        end;
+        v394 = v394 * v327(v394.UpVector, v363.normal, (Vector3.new(0, 1, 0, 0)));
+        local l_Angles_1 = CFrame.Angles;
+        local v412 = 0;
+        local v413 = -360;
+        local v414 = 360;
+        local v415 = v366 or v95;
+        if not v414 and v413 then
+            v414 = v413;
+            v413 = 1;
+        end;
+        if not v414 and not v413 then
+            v413 = 0;
+            v414 = 1;
+        end;
+        v394 = v394 * l_Angles_1(v412, math.rad((v415:NextNumber(v413, v414))), 0);
+        v412 = CFrame.Angles;
+        local v416 = 0;
+        v414 = -16;
+        v415 = 16;
+        local v417 = v366 or v95;
+        if not v415 and v414 then
+            v415 = v414;
+            v414 = 1;
+        end;
+        if not v415 and not v414 then
+            v414 = 0;
+            v415 = 1;
+        end;
+        l_Angles_1 = v394 * v412(v416, math.rad((v417:NextNumber(v414, v415))), 0);
+        v412 = true;
+        if v392 ~= 5 and v393 ~= 7 then
+            v363.Double = 2;
+        end;
+        for v418 = 1, v410 do
+            for v419 = 1, v363.Double or 1 do
+                local l_v394_0 = v394;
+                if v419 > 1 then
+                    l_v394_0 = l_Angles_1;
+                    v409 = v409 + 1;
+                end;
+                local v421 = math.sin((360 / v410 + 360 / v410 * v418) / 57.29577951308232);
+                local v422 = math.cos((360 / v410 + 360 / v410 * v418) / 57.29577951308232);
+                local v423 = l_v394_0 * CFrame.new(v409 * v421, 0, v409 * v422);
+                local v424 = 0.2;
+                if v363.Double then
+                    v424 = 0.35;
+                end;
+                local l_lookVector_0 = v423.lookVector;
+                local v426 = -v424;
+                local l_v424_0 = v424;
+                local l_v426_0 = v426;
+                local l_l_v424_0_0 = l_v424_0;
+                local v430 = v366 or v95;
+                if not l_l_v424_0_0 and l_v426_0 then
+                    l_l_v424_0_0 = l_v426_0;
+                    l_v426_0 = 1;
+                end;
+                if not l_l_v424_0_0 and not l_v426_0 then
+                    l_v426_0 = 0;
+                    l_l_v424_0_0 = 1;
+                end;
+                v423 = v423 + l_lookVector_0 * v430:NextNumber(l_v426_0, l_l_v424_0_0);
+                local v431 = v301() or Instance.new("Part");
+                if v363.dontcollide == l_LocalPlayer_0 then
+                    v431.CollisionGroup = "nocol";
+                end;
+                v431.Anchored = true;
+                v431.CanCollide = false;
+                v431.CanTouch = true;
+                v431.Material = v363.ground.Material;
+                v431.Color = v363.ground.Color;
+                v431.CFrame = v423 * CFrame.fromEulerAnglesXYZ(0, (360 / v410 + 360 / v410 * v418) / 57.29577951308232, 0);
+                l_lookVector_0 = v431.CFrame;
+                local l_Angles_2 = CFrame.Angles;
+                l_l_v424_0_0 = 6;
+                v430 = 42;
+                local v433 = v366 or v95;
+                if not v430 and l_l_v424_0_0 then
+                    v430 = l_l_v424_0_0;
+                    l_l_v424_0_0 = 1;
+                end;
+                if not v430 and not l_l_v424_0_0 then
+                    l_l_v424_0_0 = 0;
+                    v430 = 1;
+                end;
+                v431.CFrame = l_lookVector_0 * l_Angles_2(math.rad(-v433:NextNumber(l_l_v424_0_0, v430)), 0, 0);
+                l_v426_0 = 2;
+                l_l_v424_0_0 = 5;
+                v430 = v366 or v95;
+                if not l_l_v424_0_0 and l_v426_0 then
+                    l_l_v424_0_0 = l_v426_0;
+                    l_v426_0 = 1;
+                end;
+                if not l_l_v424_0_0 and not l_v426_0 then
+                    l_v426_0 = 0;
+                    l_l_v424_0_0 = 1;
+                end;
+                v426 = v430:NextNumber(l_v426_0, l_l_v424_0_0) * (v419 > 1 and 1.8 or v363.Double and 1.35 or 1);
+                l_v426_0 = 1.9;
+                l_l_v424_0_0 = 2.4;
+                v430 = v366 or v95;
+                if not l_l_v424_0_0 and l_v426_0 then
+                    l_l_v424_0_0 = l_v426_0;
+                    l_v426_0 = 1;
+                end;
+                if not l_l_v424_0_0 and not l_v426_0 then
+                    l_v426_0 = 0;
+                    l_l_v424_0_0 = 1;
+                end;
+                v431.Size = Vector3.new(v426, v430:NextNumber(l_v426_0, l_l_v424_0_0), v370(2, 6)) * v364;
+                v431.CFrame = v431.CFrame * CFrame.new(0, -(v431.Size.Y / 3 + v431.Size.Z / 3) / 3, 0);
+                v431.Transparency = 1;
+                v431.Parent = workspace.Thrown;
+                l_lookVector_0 = v431.CFrame;
+                l_Angles_2 = nil;
+                v426 = v338(v431);
+                l_v424_0 = {};
+                l_v426_0 = nil;
+                l_l_v424_0_0 = nil;
+                for _, v435 in pairs(v426) do
+                    if not v435:IsDescendantOf(workspace.Live) and v435.Name ~= "invis" and v435.Parent ~= workspace.Thrown then
+                        if v435.Material ~= v363.ground.Material then
+                            l_Angles_2 = v435;
+                        end;
+                        table.insert(l_v424_0, v435);
+                    end;
+                    if v435 == v363.ground then
+                        l_v426_0 = v363.ground;
+                    end;
+                    if v435.Name == "Stadium" then
+                        l_l_v424_0_0 = true;
+                    end;
+                end;
+                v430 = v431.CFrame;
+                local v436 = CFrame.new(0, -3, -1.5);
+                local l_Angles_3 = CFrame.Angles;
+                local v438 = -11;
+                local v439 = 11;
+                local v440 = v366 or v95;
+                if not v439 and v438 then
+                    v439 = v438;
+                    v438 = 1;
+                end;
+                if not v439 and not v438 then
+                    v438 = 0;
+                    v439 = 1;
+                end;
+                local v441 = math.rad((v440:NextNumber(v438, v439)));
+                v439 = -11;
+                v440 = 11;
+                local v442 = v366 or v95;
+                if not v440 and v439 then
+                    v440 = v439;
+                    v439 = 1;
+                end;
+                if not v440 and not v439 then
+                    v439 = 0;
+                    v440 = 1;
+                end;
+                local v443 = math.rad((v442:NextNumber(v439, v440)));
+                v440 = -11;
+                v442 = 11;
+                local v444 = v366 or v95;
+                if not v442 and v440 then
+                    v442 = v440;
+                    v440 = 1;
+                end;
+                if not v442 and not v440 then
+                    v440 = 0;
+                    v442 = 1;
+                end;
+                v431.CFrame = v430 * (v436 * l_Angles_3(v441, v443, (math.rad((v444:NextNumber(v440, v442))))));
+                v431.Transparency = 0;
+                table.insert(v408, v431);
+                v430 = true;
+                if #l_v424_0 ~= 0 then
+                    v430 = v363.ground:GetAttribute("Breakable") or not v363.ground.Anchored;
+                end;
+                v433 = v363.angle;
+                if v433 then
+                    l_Angles_3 = v363.anglecfr;
+                    v441 = l_lookVector_0.Position;
+                    v443 = (Vector3.new(v441.X, l_Angles_3.p.Y, v441.Z) - l_Angles_3.p).unit;
+                    v433 = math.deg((math.acos((l_Angles_3.LookVector:Dot(v443))))) <= v363.angle;
+                end;
+                if v430 or v433 then
+                    if not v373 then
+                        v431.Transparency = 1;
+                    end;
+                else
+                    if l_Angles_2 and (not l_v426_0 or l_v426_0.Name ~= "Stadium") and (not l_l_v424_0_0 or v363.ground.Name ~= "Stadium") then
+                        if v363.ground.Material == Enum.Material.Grass and l_v426_0 then
+                            l_Angles_2 = workspace.Preload.Dirt;
+                        end;
+                        v431.Color = l_Angles_2.Color;
+                        v431.Material = l_Angles_2.Material;
+                    end;
+                    v431.Transparency = v363.ground.Transparency;
+                end;
+                if v431.Transparency >= 1 then
+                    v431.CanCollide = false;
+                    v431.CanTouch = false;
+                    v431.CanQuery = false;
+                else
+                    v431.CanCollide = true;
+                end;
+                if v431.Velocity.magnitude > 0 then
+                    v431.AssemblyLinearVelocity = Vector3.new(0, 0, 0, 0);
+                    v431.AssemblyAngularVelocity = Vector3.new(0, 0, 0, 0);
+                    v431.Velocity = Vector3.new(0, 0, 0, 0);
+                end;
+                if v374 or v373 then
+                    v431.CFrame = l_lookVector_0;
+                    v362(v431);
+                end;
+                do
+                    local l_l_v394_0_0 = l_v394_0;
+                    if v412 then
+                        v412 = false;
+                        v436 = {
+                            "rbxassetid://3848076724",
+                            "rbxassetid://3848078820"
+                        };
+                        l_Angles_3 = {
+                            "rbxassetid://4307208601",
+                            "rbxassetid://4307207425",
+                            "rbxassetid://4307207693",
+                            "rbxassetid://4307205188",
+                            "rbxassetid://3778609188",
+                            "rbxassetid://3778608737",
+                            "rbxassetid://3744401196",
+                            "rbxassetid://4307204962"
+                        };
+                        v441 = {
+                            "rbxassetid://4307204696",
+                            "rbxassetid://4307204452"
+                        };
+                        if v374 then
+                            v443 = 1;
+                            if v372 then
+                                v443 = 2;
+                            end;
+                            if not shared.recentdebris then
+                                shared.recentdebris = {};
+                            end;
+                            v438 = function(v446) --[[ Line: 2583 ]] --[[ Name: adaptiveWait ]]
+                                local v447 = 0.015;
+                                if v446 < 0.8 then
+                                    v447 = 0.015 + (0.8 - v446) * 0.02;
+                                end;
+                                return v447;
+                            end;
+                            v439 = (v392 + v393) / 12;
+                            v440 = task.delay;
+                            v444 = 0.015;
+                            if v439 < 0.8 then
+                                v444 = 0.015 + (0.8 - v439) * 0.02;
+                            end;
+                            local l_v439_0 = v439;
+                            do
+                                local l_v443_0 = v443;
+                                v440(v444, function() --[[ Line: 2595 ]]
+                                    -- upvalues: l_v439_0 (copy), l_l_v394_0_0 (ref), v313 (ref), l_v443_0 (ref), v373 (ref), v392 (ref), v393 (ref), v366 (copy), v95 (ref)
+                                    local v450 = true;
+                                    for v451, v452 in pairs(shared.recentdebris) do
+                                        local v453 = v452[1];
+                                        local _ = v452[2];
+                                        if tick() - v452[2] > 0.5 then
+                                            shared.recentdebris[v451] = nil;
+                                        elseif (v453.Position - v453.Position).magnitude <= 5 then
+                                            v450 = false;
+                                            break;
+                                        end;
+                                    end;
+                                    if v450 then
+                                        local v455 = l_v439_0 >= 0.8;
+                                        if v455 then
+                                            table.insert(shared.recentdebris, {
+                                                l_l_v394_0_0,
+                                                tick()
+                                            });
+                                            v313({
+                                                SoundId = ({
+                                                    "rbxassetid://18922680029",
+                                                    "rbxassetid://18922679331",
+                                                    "rbxassetid://18922678743",
+                                                    "rbxassetid://18922678349"
+                                                })[math.random(1, 4)],
+                                                Volume = 1.35 / l_v443_0,
+                                                CFrame = l_l_v394_0_0
+                                            }):Play();
+                                        end;
+                                        if v373 then
+                                            local v456 = (v392 + v393) / 12;
+                                            local v457 = {
+                                                "rbxassetid://18922743710",
+                                                "rbxassetid://18922743936",
+                                                "rbxassetid://18922744361"
+                                            };
+                                            if not v455 then
+                                                v457 = {
+                                                    "rbxassetid://97900036122485",
+                                                    "rbxassetid://73075062841158",
+                                                    "rbxassetid://122164610127113",
+                                                    "rbxassetid://78182682399983",
+                                                    "rbxassetid://89999290123856",
+                                                    "rbxassetid://70534139031144"
+                                                };
+                                            end;
+                                            local v458 = 0;
+                                            if not v455 then
+                                                v458 = v458 + 1;
+                                            end;
+                                            local l_v313_0 = v313;
+                                            local v460 = {
+                                                SoundId = v457[math.random(#v457)],
+                                                Volume = 1.75 / l_v443_0 + math.max(v456 - 1, 0) + v458
+                                            };
+                                            local v461 = 0.9;
+                                            local v462 = 1.1;
+                                            local v463 = v366 or v95;
+                                            if not v462 and v461 then
+                                                v462 = v461;
+                                                v461 = 1;
+                                            end;
+                                            if not v462 and not v461 then
+                                                v461 = 0;
+                                                v462 = 1;
+                                            end;
+                                            v460.PlaybackSpeed = v463:NextNumber(v461, v462);
+                                            v460.CFrame = l_l_v394_0_0;
+                                            l_v313_0(v460):Play();
+                                            l_v313_0 = game.ReplicatedStorage.Resources.Splash:Clone();
+                                            game:GetService("Debris"):AddItem(l_v313_0, 5);
+                                            l_v313_0:ScaleTo(v456 + 0.3);
+                                            l_v313_0.PrimaryPart.CFrame = l_l_v394_0_0;
+                                            l_v313_0.Parent = workspace.Thrown;
+                                            for _, v465 in pairs(l_v313_0:GetDescendants()) do
+                                                if v465:IsA("ParticleEmitter") then
+                                                    v465:Emit(v465:GetAttribute("EmitCount"));
+                                                end;
+                                            end;
+                                        end;
+                                    end;
+                                end);
+                            end;
+                        elseif l_add_0.sounds and not v363.nosound then
+                            v443 = 1;
+                            if v372 then
+                                v443 = 2;
+                            end;
+                            v438 = v313;
+                            v439 = {};
+                            v444 = #v441;
+                            local v466 = nil;
+                            local l_v95_3 = v95;
+                            if not v466 and v444 then
+                                v466 = v444;
+                                v444 = 1;
+                            end;
+                            if not v466 and not v444 then
+                                v444 = 0;
+                                v466 = 1;
+                            end;
+                            v439.SoundId = v441[l_v95_3:NextInteger(v444, v466)];
+                            v439.Volume = 3.85 / v443;
+                            v439.Parent = v431;
+                            v438(v439):Play();
+                            v438 = v313;
+                            v439 = {};
+                            v444 = #l_Angles_3;
+                            v466 = nil;
+                            l_v95_3 = v95;
+                            if not v466 and v444 then
+                                v466 = v444;
+                                v444 = 1;
+                            end;
+                            if not v466 and not v444 then
+                                v444 = 0;
+                                v466 = 1;
+                            end;
+                            v439.SoundId = l_Angles_3[l_v95_3:NextInteger(v444, v466)];
+                            v439.Volume = 4.3 / v443;
+                            v439.Parent = v431;
+                            v438(v439):Play();
+                            v438 = v313;
+                            v439 = {};
+                            v444 = #v436;
+                            v466 = nil;
+                            l_v95_3 = v95;
+                            if not v466 and v444 then
+                                v466 = v444;
+                                v444 = 1;
+                            end;
+                            if not v466 and not v444 then
+                                v444 = 0;
+                                v466 = 1;
+                            end;
+                            v439.SoundId = v436[l_v95_3:NextInteger(v444, v466)];
+                            v439.Volume = 4.12 / v443;
+                            v439.Parent = v431;
+                            v438(v439):Play();
+                        end;
+                    end;
+                    v431:SetAttribute("OGCframe", l_lookVector_0);
+                    if not v374 then
+                        v436 = v10;
+                        v441 = v431;
+                        v443 = TweenInfo.new;
+                        v439 = 0.2;
+                        v440 = 0.3;
+                        v442 = v366 or v95;
+                        if not v440 and v439 then
+                            v440 = v439;
+                            v439 = 1;
+                        end;
+                        if not v440 and not v439 then
+                            v439 = 0;
+                            v440 = 1;
+                        end;
+                        v436:Create(v441, v443(v442:NextNumber(v439, v440), Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                            CFrame = l_lookVector_0
+                        }):Play();
+                    end;
+                    if v374 or v373 then
+                        task.delay(1, function() --[[ Line: 2700 ]]
+                            -- upvalues: v431 (copy), v107 (ref)
+                            v431:SetAttribute("OGCframe", nil);
+                            v431.Anchored = true;
+                            local l_v431_0 = v431;
+                            l_v431_0.AssemblyLinearVelocity = Vector3.new(0, 0, 0, 0);
+                            l_v431_0.AssemblyAngularVelocity = Vector3.new(0, 0, 0, 0);
+                            l_v431_0.Velocity = Vector3.new(0, 0, 0, 0);
+                            v431.CFrame = CFrame.new(100000000, 100000000, 100000000);
+                            table.insert(v107, v431);
+                        end);
+                    else
+                        v436 = l_add_0.keep;
+                        if not v436 then
+                            l_Angles_3 = 5;
+                            v441 = 7;
+                            v443 = v366 or v95;
+                            if not v441 and l_Angles_3 then
+                                v441 = l_Angles_3;
+                                l_Angles_3 = 1;
+                            end;
+                            if not v441 and not l_Angles_3 then
+                                l_Angles_3 = 0;
+                                v441 = 1;
+                            end;
+                            v436 = v443:NextNumber(l_Angles_3, v441);
+                        end;
+                        l_Angles_3 = TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.In);
+                        if v363.dispersefast then
+                            v436 = v363.dispersefast;
+                        end;
+                        if v363.customtween then
+                            l_Angles_3 = v363.customtween;
+                        end;
+                        do
+                            local l_l_Angles_3_0 = l_Angles_3;
+                            delay(v436, function() --[[ Line: 2718 ]]
+                                -- upvalues: l_add_0 (copy), v10 (ref), v431 (copy), l_lookVector_0 (copy), l_l_Angles_3_0 (ref), v107 (ref)
+                                if l_add_0.keep then
+                                    v10:Create(v431, TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                                        CFrame = l_lookVector_0,
+                                        Size = v431.Size
+                                    }):Play();
+                                    wait(2);
+                                end;
+                                v10:Create(v431, l_l_Angles_3_0, {
+                                    CFrame = v431.CFrame * CFrame.new(0, -7, 0),
+                                    Size = v431.Size / 1.5
+                                }):Play();
+                                wait(2);
+                                v431:SetAttribute("OGCframe", nil);
+                                v431.Anchored = true;
+                                local l_v431_1 = v431;
+                                l_v431_1.AssemblyLinearVelocity = Vector3.new(0, 0, 0, 0);
+                                l_v431_1.AssemblyAngularVelocity = Vector3.new(0, 0, 0, 0);
+                                l_v431_1.Velocity = Vector3.new(0, 0, 0, 0);
+                                v431.CFrame = CFrame.new(100000000, 100000000, 100000000);
+                                table.insert(v107, v431);
+                            end);
+                        end;
+                    end;
+                end;
+            end;
+        end;
+        return v408;
+    end;
+end;
+
+-- ============================================================
+-- v717 / shared.ray — raycast helper
+-- upvalues: v472 (copy)
+-- Supports both Raycast and Blockcast, Whitelist and Ignore modes.
+-- ============================================================
+local function v717(v711) --[[ Line: 3797 ]]
+    -- upvalues: v472 (copy)
+    local l_orig_0 = v711.orig;
+    local l_dir_0 = v711.dir;
+    local v714 = RaycastParams.new();
+    v714.FilterDescendantsInstances = v711.Whitelist or v711.Ignore or v472;
+    if v711.Whitelist then
+        v714.FilterType = Enum.RaycastFilterType.Include;
+    else
+        v714.FilterType = Enum.RaycastFilterType.Exclude;
+    end;
+    if v711.Blockcast then
+        local v715 = workspace:Blockcast(l_orig_0, v711.Blockcast, l_dir_0, v714);
+        if v715 then
+            return v715.Instance, v715.Position, v715.Material, v715.Normal;
+        else
+            return;
+        end;
+    else
+        local v716 = workspace:Raycast(l_orig_0, l_dir_0, v714);
+        if v716 then
+            return v716.Instance, v716.Position, v716.Material, v716.Normal;
+        else
+            return;
+        end;
+    end;
+end;
+shared.ray = v717;
+
+-- ============================================================
+-- shared.resizeparticle — scales a ParticleEmitter's Size or Speed
+-- ============================================================
+shared.resizeparticle = function(v837, v838, v839) --[[ Line: 4191 ]]
+    local v840 = v839 or "Size";
+    if v840 == "Speed" then
+        v837.Speed = NumberRange.new(v837.Speed.Min * v838, v837.Speed.Max * v838);
+        return;
+    else
+        for _, v842 in pairs({ v837 }) do
+            local v843 = {};
+            for _, v845 in pairs(v842[v840].Keypoints) do
+                table.insert(v843, NumberSequenceKeypoint.new(v845.Time, v845.Value * v838, v845.Envelope));
+            end;
+            v842[v840] = NumberSequence.new(v843);
+        end;
+        return;
+    end;
+end;
+
+-- ============================================================
+-- shared.* STUBS
+-- ============================================================
+shared.SetCore       = shared.SetCore       or function() end;
+shared.addshake      = shared.addshake      or function() end;
+shared.CutsceneEvent = shared.CutsceneEvent or function() end;
+shared.recentdebris  = shared.recentdebris  or {};
+
+-- OnScreen: returns true if the given world Vector3 is visible on screen.
+-- In the full game this is set by another LocalScript. This stub uses
+-- WorldToScreenPoint directly, which is functionally identical.
+shared.OnScreen = shared.OnScreen or function(pos)
+    local _, onScreen = workspace.CurrentCamera:WorldToScreenPoint(pos);
+    return onScreen;
+end;
+
+-- ============================================================
+-- v12 — effects dispatcher
+-- ============================================================
+v12 = function(v1090)
+    local v1091 = rawget(v1090, "Effect");
+
+    -- ==========================================
+    -- GROUND CRATER
+    -- ==========================================
+    if v1091 == "Ground Crater" then
+                if typeof(v1090.start) == "Instance" then
+                    if v1090.start:IsA("Attachment") then
+                        v1090.start = v1090.start.WorldPosition;
+                    else
+                        v1090.start = v1090.start.Position;
+                    end;
+                end;
+                local v23481 = Random.new(v1090.Seed);
+                local l_v102_4 = v102;
+                local l_l_v102_4_0 = l_v102_4;
+                local l_v23481_0 = v23481;
+                local function _(v23485, v23486) --[[ Line: 48303 ]]
+                    -- upvalues: l_l_v102_4_0 (copy), l_v23481_0 (copy)
+                    return l_l_v102_4_0(v23485, v23486, nil, l_v23481_0);
+                end;
+                local v23488, v23489, _, v23491 = v717({
+                    orig = v1090.start,
+                    dir = v1090["end"]
+                });
+                if v1090.Sound then
+                    v1090.Sound.CFrame = CFrame.new(v23489);
+                    shared.sfx(v1090.Sound):Play();
+                end;
+                if v23488 then
+                    local v23492 = v327(CFrame.new(v23489).UpVector, v23491, (Vector3.new(0, 1, 0, 0)));
+                    local l_Attachment_18 = Instance.new("Attachment");
+                    l_Attachment_18.Parent = v23488;
+                    if not v23488.Anchored or v1090.smoked then
+                        l_Attachment_18.Parent = workspace.Terrain;
+                    end;
+                    l_Attachment_18.WorldCFrame = CFrame.new(v23489) * v23492;
+                    if not v1090.nosmoke then
+                        local v23494 = 8;
+                        if l_LocalPlayer_0:GetAttribute("S_FastMode") then
+                            v23494 = v23494 / 2;
+                        end;
+                        local v23495 = -0.001;
+                        local v23496 = 0.001;
+                        local v23497 = v23481 or v95;
+                        if not v23496 and v23495 then
+                            v23496 = v23495;
+                            v23495 = 1;
+                        end;
+                        if not v23496 and not v23495 then
+                            v23495 = 0;
+                            v23496 = 1;
+                        end;
+                        local v23498 = v23497:NextNumber(v23495, v23496);
+                        v23495 = game.ReplicatedStorage.Resources.Smoke:Clone();
+                        v23495.Parent = l_Attachment_18;
+                        v23495.ZOffset = v23495.ZOffset + v23498;
+                        v23495.Color = ColorSequence.new(v23488 == workspace.Terrain and Color3.fromRGB(227, 206, 157) or v23488.Color);
+                        if v1090.stronger then
+                            shared.resizeparticle(v23495, v1090.stronger.size1 or 4.2);
+                            v23495.Speed = NumberRange.new(v23495.Speed.Min * (4.5 - (v1090.stronger.minus or 0)), v23495.Speed.Max * (4.5 - (v1090.stronger.minus or 0)));
+                            v23495.Lifetime = NumberRange.new(v23495.Lifetime.Min * 2, v23495.Lifetime.Max * 2);
+                            v23495.RotSpeed = NumberRange.new(v23495.RotSpeed.Min * 0.35, v23495.RotSpeed.Max * 0.35);
+                        else
+                            shared.resizeparticle(v23495, 1.25);
+                            if v1090.CloserCircle then
+                                v23495.Speed = NumberRange.new(25, 50);
+                                shared.resizeparticle(v23495, 0.7);
+                                v23494 = v23494 / 1.5;
+                            end;
+                            if v1090.Closerr then
+                                shared.resizeparticle(v23495, 0.55);
+                                v23495.Speed = NumberRange.new(7, 25);
+                            end;
+                        end;
+                        if v23488 ~= workspace.Terrain and not v1090.NoCircleSmoke then
+                            v23495:Emit(v23494);
+                        end;
+                        v23496 = 8;
+                        if l_LocalPlayer_0:GetAttribute("S_FastMode") then
+                            v23496 = v23496 / 2;
+                        end;
+                        v23497 = game.ReplicatedStorage.Resources.UpSmoke:Clone();
+                        v23497.Parent = l_Attachment_18;
+                        v23497.ZOffset = v23497.ZOffset + v23498;
+                        v23497.Color = ColorSequence.new(v23488 == workspace.Terrain and Color3.fromRGB(227, 206, 157) or v23488.Color);
+                        if v1090.stronger then
+                            shared.resizeparticle(v23497, v1090.stronger.size2 or 4.2);
+                            v23497.Speed = v1090.speed1 or NumberRange.new(v23497.Speed.Min * (4.5 - (v1090.stronger.minus or 0)), v23497.Speed.Max * (4.5 - (v1090.stronger.minus or 0)));
+                            v23497.Lifetime = NumberRange.new(v23497.Lifetime.Min * 2, v23497.Lifetime.Max * 2);
+                            v23497.RotSpeed = NumberRange.new(v23497.RotSpeed.Min * 0.35, v23497.RotSpeed.Max * 0.35);
+                        else
+                            shared.resizeparticle(v23497, 1.25);
+                            if v1090.Closerr then
+                                shared.resizeparticle(v23497, 0.3);
+                                v23496 = v23496 / 1.5;
+                                v23497.Speed = NumberRange.new(20, 35);
+                            end;
+                        end;
+                        shared.resizeparticle(v23497, 1.25);
+                        if v23488 ~= workspace.Terrain and not v1090.NoUpSmoke then
+                            v23497:Emit(v23496);
+                        end;
+                    end;
+                    game:GetService("Debris"):AddItem(l_Attachment_18, 9);
+                    local v23499 = false;
+                    if v23488.Material == Enum.Material.Sand or v23488.Material == Enum.Material.Snow then
+                        v23499 = true;
+                    end;
+                    if not v1090.NoCrater2 then
+                        v471({
+                            ground = v23488,
+                            cframe = CFrame.new(v23489),
+                            amount = (v1090.amount or v23499 and 7 or 10) / 1.25,
+                            normal = v23491,
+                            sand = v23499 and true or nil,
+                            add = {
+                                sounds = true
+                            },
+                            sizemult = v1090.sizemult,
+                            new = {
+                                5 * (v1090.size or 1),
+                                5.5 * (v1090.size or 1)
+                            },
+                            nosound = v1090.nosound,
+                            angle = v1090.angle,
+                            dontcollide = v1090.dontcollide,
+                            anglecfr = v1090.anglecfr,
+                            nodebris = v1090.nodebris,
+                            notiles = v1090.notiles,
+                            Seed = v1090.Seed,
+                            dispersefast = v1090.dispersefast
+                        });
+                    end;
+                    return;
+                end;
+
+    -- ==========================================
+    -- CAMSHAKE (support system)
+    -- ==========================================
+    elseif v1091 == "Camshake" then
+                if v1090.OnScreenOnly and v1090.RealPart then
+                    local l_Position_96 = v1090.RealPart.PrimaryPart.Position;
+                    local _, v23210 = workspace:FindFirstChildOfClass("Camera"):WorldToScreenPoint(l_Position_96);
+                    if not v23210 then
+                        return;
+                    end;
+                end;
+                if v1090.Last and typeof(v1090.Last) ~= "number" then
+                    v1090.Last = nil;
+                end;
+                if v1090.Last then
+                    task.spawn(function()
+                        -- upvalues: v1090 (copy)
+                        for _ = 1, v1090.Last / 0.03 do
+                            local l_addshake_0 = shared.addshake;
+                            if l_addshake_0 then
+                                l_addshake_0(v1090.Intensity);
+                            end;
+                            local l_v1090_0 = v1090;
+                            l_v1090_0.Intensity = l_v1090_0.Intensity * 0.9;
+                            task.wait(0.03);
+                        end;
+                    end);
+                    return;
+                else
+                    shared.addshake(v1090.Intensity, v1090.IgnoreReduced);
+                end;
+
+    end -- closes if/elseif v1091 chain
+end -- closes v12
+
+-- ============================================================
+-- ENTRY POINT
+-- ============================================================
+local player    = game.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+
+-- Fire the effect downward from slightly above the character's feet.
+-- Adjust start/end to point at any world position you want to crater.
+v12({
+    Effect  = "Ground Crater",
+    start   = character.PrimaryPart.Position + Vector3.new(0, 5, 0),
+    ["end"] = Vector3.new(0, -50, 0),
+})
