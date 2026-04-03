@@ -8154,7 +8154,7 @@ end -- closes v12
 -- will not fire any VFX until a playing track matching this ID is found.
 -- ===========================================================================
 
-local TORNADO_ANIM_ID = 0 -- TODO: replace with real animation ID
+local TORNADO_ANIM_ID = 17278415853-- TODO: replace with real animation ID
 
 local player    = game.Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
